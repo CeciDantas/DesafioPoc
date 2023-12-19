@@ -1,0 +1,196 @@
+import sqlite3
+
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from sqlalchemy.dialects import sqlite
+
+def extrair_dados_selenium():
+    # Configurando o webdriver do Chrome
+    options = webdriver.ChromeOptions()
+    driver = webdriver.Chrome(options=options)
+
+    # Acesso à página web
+    url = 'https://www.vriconsulting.com.br/guias/guiasIndex.php?idGuia=22'
+    driver.get(url)
+    driver.implicitly_wait(10)
+
+    # Localização da tabela usando XPath
+    table_xpath = '/html/body/section/section[2]/table[1]'
+    table = driver.find_element(by=By.XPATH, value=table_xpath)
+
+    # Conexão com o banco de dados SQLite
+    db_path = 'dados.db'
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+
+    # Definição da tabela no banco de dados
+    cursor.execute('''DROP TABLE IF EXISTS tabela''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS tabela (
+            N TEXT, 
+            Campo TEXT,
+            Descricao TEXT,
+            Tipo TEXT,
+            Tam TEXT,
+            Dec TEXT,
+            Entr TEXT,
+            Saida TEXT
+        )
+    ''')
+
+    # Extração de dados e inserção no banco de dados
+    rows = table.find_elements(By.TAG_NAME, 'tr')[1:]
+    for row in rows:
+        columns = row.find_elements(By.TAG_NAME, 'td')
+        data = [col.text for col in columns]
+
+        cursor.execute('''
+            INSERT INTO tabela (N, Campo, Descricao, Tipo, Tam, Dec, Entr, Saida)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', data)
+
+    # Commit e fechamento da conexão com o banco de dados
+    conn.commit()
+    conn.close()
+
+    # Encerramento do WebDriver
+    driver.quit()
+
+# Chamada da função para executar o código
+extrair_dados_selenium()
+
+#FLASK AQUI
+from flask import Flask, jsonify, request, make_response, abort
+import sqlite3
+
+app = Flask(__name__)
+
+# Conectar ao banco de dados SQLite
+def conectar_bd():
+    return sqlite3.connect('dados.db')
+
+def sortFn(dict):
+    return dict['N']
+
+# Rota para listar todas as informações
+@app.route('/', methods=['GET'])
+def listar_informacoes():
+    try:
+        # Conectar ao banco de dados
+        conexao = conectar_bd()
+        cursor = conexao.cursor()
+
+        # Consultar o SQL para ver todas as informações
+        cursor.execute('SELECT * FROM tabela')
+        dados = cursor.fetchall()
+
+        # Verificar se há dados
+        if not dados:
+            abort(404, description='Nenhuma informação encontrada.')
+
+        # Transformar para JSON
+        resultado = [{'N': linha[0], 'Campo': linha[1], 'Descricao': linha[2], 'Tipo': linha[3], 'Tamanho': linha[4], 'Dec': linha[5], 'Entr': linha[6], 'Saida': linha[7]} for linha in dados]
+
+        conexao.close()
+        resultado.sort(key=sortFn)
+
+        # Retornar os dados como JSON
+        return jsonify({'informacoes': resultado})
+
+    except sqlite3.Error as e:
+        return make_response(jsonify({'error': f'Erro no banco de dados: {str(e)}'}), 500)
+    except Exception as e:
+        return make_response(jsonify({'error': str(e)}), 500)
+
+# Rota para deletar registros com base em um critério
+@app.route('/deletar', methods=['DELETE'])
+def deletar_registros():
+    try:
+        # Conectar ao banco de dados
+        conexao = conectar_bd()
+        cursor = conexao.cursor()
+
+        # Verificar se a tabela existe ou não
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tabela'")
+        tabela_existe = cursor.fetchone()
+
+        if not tabela_existe:
+            abort(404, description='A tabela não existe.')
+
+        # Obter os critérios
+        campo = request.args.get('campo')
+        valor = request.args.get('valor')
+
+        # Validar as informações
+        if campo is None or valor is None:
+            abort(400, description='Campos obrigatórios ausentes.')
+
+        # Construir o comando SQL para deletar registros
+        comando_sql = f"DELETE FROM tabela WHERE {campo} = '{valor}'"
+
+        # Executar o comando SQL
+        cursor.execute(comando_sql)
+
+        # Verificar se algum registro foi deletado
+        if cursor.rowcount == 0:
+            abort(404, description=f'Nenhum registro encontrado para deletar com {campo}={valor}')
+
+        conexao.commit()
+        conexao.close()
+
+        # Retornar uma mensagem indicando o sucesso da operação
+        return jsonify({'message': f'Informação deletada com sucesso: {campo}={valor}'})
+
+    except sqlite3.Error as e:
+        return make_response(jsonify({'error': f'Erro no banco de dados: {str(e)}'}), 500)
+    except Exception as e:
+        return make_response(jsonify({'error': f'Erro durante a exclusão: {str(e)}'}), 500)
+
+# Rota para inserir um novo registro
+@app.route('/inserir', methods=['POST'])
+def inserir_registro():
+    try:
+        # Conectar ao banco de dados
+        conexao = conectar_bd()
+        cursor = conexao.cursor()
+        NArg = request.args.get('N')
+
+        # Campos obrigatórios
+        Campo = request.json.get('Campo')
+        Dec = request.json.get('Dec')
+        Descricao = request.json.get('Descricao')
+        Entr = request.json.get('Entr')
+        N = request.json.get('N')
+        Saida = request.json.get('Saida')
+        Tam = request.json.get('Tamanho')
+        Tipo = request.json.get('Tipo')
+
+        # Validar os campos obrigatórios
+        if N is None:
+            abort(400, description='Campo obrigatório N não está presente.')
+
+        if NArg is None:
+            # Comando SQL para inserir um novo registro
+            comando_sql = f"INSERT INTO tabela (Campo, Dec, Descricao, Entr, N , Saida, Tam , Tipo) VALUES ( '{Campo}', '{Dec}', '{Descricao}', '{Entr}', '{N}' , '{Saida}', '{Tam}' , '{Tipo}')"
+
+            # Executar o comando SQL
+            cursor.execute(comando_sql)
+        else:
+            comando_sql = f"UPDATE tabela SET Campo = '{Campo}', Dec = '{Dec}', Descricao = '{Descricao}', Entr = '{Entr}', Saida = '{Saida}', Tam = '{Tam}', Tipo = '{Tipo}' WHERE N = '{N}'"
+
+            cursor.execute(comando_sql)
+
+        conexao.commit()
+
+        conexao.close()
+
+        # Retornar uma mensagem indicando o sucesso da operação
+        return jsonify({'message': 'Novo registro inserido com sucesso'}), 200
+
+    except sqlite3.Error as e:
+        return make_response(jsonify({'error': f'Erro no banco de dados: {str(e)}'}), 500)
+    except Exception as e:
+        return make_response(jsonify({'error': f'Erro durante a inserção: {str(e)}'}), 500)
+
+if __name__ == '__main__':
+    app.run(debug=True)
