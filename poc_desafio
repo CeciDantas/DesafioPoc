@@ -59,7 +59,7 @@ def extrair_dados_selenium():
 # Chamada da função para executar o código
 extrair_dados_selenium()
 
-#FLASK AQUI
+
 from flask import Flask, jsonify, request, make_response, abort
 import sqlite3
 
